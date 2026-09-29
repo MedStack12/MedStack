@@ -5,11 +5,11 @@ const SEV = {
   yellow: { line: '#c98a1e', node: '#f7ecd6', stroke: '#c98a1e', text: '#8a5e12' },
   green: { line: '#4f9d74', node: '#e2f0e8', stroke: '#4f9d74', text: '#2c6b4e' },
 };
-// Untapped node state — neutral, not tied to any severity color.
 const NEUTRAL = { node: '#ffffff', stroke: '#9fb3ab', text: '#3c4a45' };
-const WEIGHT = { red: 3, yellow: 2, green: 1 };
+// Uniform line weight across all severities — color and the stop-sign carry
+// the meaning now, not line thickness.
+const LINE_WIDTH = 2.5;
 
-// Lay nodes out on a circle so the graph reads cleanly at any count.
 function layout(n, cx, cy, r) {
   if (n === 1) return [{ x: cx, y: cy }];
   const pts = [];
@@ -19,6 +19,16 @@ function layout(n, cx, cy, r) {
     pts.push({ x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) });
   }
   return pts;
+}
+
+// 8-point octagon path for the stop-sign icon.
+function octagonPoints(cx, cy, r) {
+  const pts = [];
+  for (let i = 0; i < 8; i++) {
+    const a = (Math.PI / 8) + (i / 8) * Math.PI * 2;
+    pts.push(`${cx + r * Math.cos(a)},${cy + r * Math.sin(a)}`);
+  }
+  return pts.join(' ');
 }
 
 export default function SafetyGraph({ drugs, pairs, onSelectPair, highlightKey, tappedKey }) {
@@ -32,8 +42,6 @@ export default function SafetyGraph({ drugs, pairs, onSelectPair, highlightKey, 
     return m;
   }, [drugs]);
 
-  // Only the two nodes on either end of the tapped line pick up a severity
-  // color; everything else stays neutral until tapped.
   const nodeSeverity = useMemo(() => {
     const sev = drugs.map(() => null);
     const tapped = tappedKey && pairs.find((p) => [p.drugA, p.drugB].sort().join('|') === tappedKey);
@@ -47,7 +55,6 @@ export default function SafetyGraph({ drugs, pairs, onSelectPair, highlightKey, 
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Medication interaction map">
-      {/* edges first so nodes sit on top */}
       {pairs.map((p, i) => {
         const a = index.get(p.drugA.toLowerCase());
         const b = index.get(p.drugB.toLowerCase());
@@ -57,22 +64,36 @@ export default function SafetyGraph({ drugs, pairs, onSelectPair, highlightKey, 
         const isHot = p.severity !== 'green';
         const isHi = highlightKey === k;
         const len = Math.hypot(pos[b].x - pos[a].x, pos[b].y - pos[a].y);
+        const midX = (pos[a].x + pos[b].x) / 2;
+        const midY = (pos[a].y + pos[b].y) / 2;
         return (
-          <line
-            key={i}
-            x1={pos[a].x} y1={pos[a].y} x2={pos[b].x} y2={pos[b].y}
-            stroke={s.line}
-            strokeWidth={WEIGHT[p.severity] + (isHi ? 1.5 : 0)}
-            strokeDasharray={p.severity === 'yellow' ? '6 5' : len}
-            strokeDashoffset={p.severity === 'red' ? len : 0}
-            strokeLinecap="round"
-            style={{
-              cursor: isHot ? 'pointer' : 'default',
-              animation: p.severity === 'red' ? `draw-line 0.7s ease forwards` : 'none',
-              opacity: isHot ? 1 : 0.7,
-            }}
-            onClick={() => isHot && onSelectPair?.(p)}
-          />
+          <g key={i}>
+            <line
+              x1={pos[a].x} y1={pos[a].y} x2={pos[b].x} y2={pos[b].y}
+              stroke={s.line}
+              strokeWidth={LINE_WIDTH + (isHi ? 1.5 : 0)}
+              strokeDasharray={len}
+              strokeDashoffset={p.severity === 'red' ? len : 0}
+              strokeLinecap="round"
+              style={{
+                cursor: isHot ? 'pointer' : 'default',
+                animation: p.severity === 'red' ? `draw-line 0.7s ease forwards` : 'none',
+                opacity: isHot ? 1 : 0.7,
+              }}
+              onClick={() => isHot && onSelectPair?.(p)}
+            />
+            {p.severity === 'red' && (
+              <g
+                style={{ cursor: 'pointer', animation: 'pop 0.3s ease 0.7s both' }}
+                onClick={() => onSelectPair?.(p)}
+              >
+                <polygon points={octagonPoints(midX, midY, 15)} fill="#c2453b" stroke="#ffffff" strokeWidth="1.5" />
+                <text x={midX} y={midY + 3.5} textAnchor="middle" fontSize="8" fontWeight="800" fill="#ffffff" letterSpacing="0.3">
+                  STOP
+                </text>
+              </g>
+            )}
+          </g>
         );
       })}
 

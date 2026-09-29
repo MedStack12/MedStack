@@ -5,8 +5,6 @@ import MapScreen from './components/MapScreen';
 import Onboarding, { STEPS } from './components/Onboarding';
 import { api } from './lib/api';
 
-// Seed stack so the first-run demo has real red/yellow/green lines to point
-// at. Cleared the moment onboarding finishes (see finishOnboarding below).
 const SEED = [
   { name: 'metformin', dosage: '500 mg', frequency: '2× daily' },
   { name: 'lisinopril', dosage: '10 mg', frequency: 'daily' },
@@ -22,6 +20,7 @@ export default function App() {
   const [onboardStep, setOnboardStep] = useState(0);
   const [tab, setTab] = useState(showOnboarding ? STEPS[0].tab : 'stack');
   const [drugs, setDrugs] = useState(() => (hasOnboarded() ? [] : SEED));
+  const [groups, setGroups] = useState([]);
   const [pairs, setPairs] = useState([]);
   const [summary, setSummary] = useState({ red: 0, amber: 0, green: 0 });
   const [loading, setLoading] = useState(false);
@@ -60,6 +59,7 @@ export default function App() {
     try { localStorage.setItem('medstack_onboarded', 'true'); } catch {}
     setShowOnboarding(false);
     setDrugs([]);
+    setGroups([]);
     setPairs([]);
     setSummary({ red: 0, amber: 0, green: 0 });
     setTab('scan');
@@ -73,25 +73,22 @@ export default function App() {
       setPairs(pairs);
       setSummary({ red: summary.red || 0, amber: summary.yellow || 0, green: summary.green || 0 });
     } catch {
-      // keep last known state on failure
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => { recheck(drugs); }, []); // initial
+  useEffect(() => { recheck(drugs); }, []);
 
   function addDrug(d) {
     if (!d?.name) return;
     setDrugs((prev) => {
       if (prev.some((x) => x.name.toLowerCase() === d.name.toLowerCase())) return prev;
-      // days: [] means "not grouped" — shows up regardless of which day is
-      // selected on the map. Grouping into days is entirely optional.
-      const next = [...prev, { ...d, days: d.days || [] }];
+      const next = [...prev, { ...d, groupId: d.groupId || null }];
       recheck(next);
       return next;
     });
-    setTab('map'); // jump to the map so the new line is visible
+    setTab('map');
   }
 
   function removeDrug(name) {
@@ -102,8 +99,20 @@ export default function App() {
     });
   }
 
-  function updateDrugDays(name, days) {
-    setDrugs((prev) => prev.map((x) => (x.name.toLowerCase() === name.toLowerCase() ? { ...x, days } : x)));
+  function assignGroup(name, groupId) {
+    setDrugs((prev) => prev.map((x) => (x.name.toLowerCase() === name.toLowerCase() ? { ...x, groupId } : x)));
+  }
+
+  function createGroup(name) {
+    setGroups((prev) => {
+      if (prev.some((g) => g.name.toLowerCase() === name.toLowerCase())) return prev;
+      return [...prev, { id: `g_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, name }];
+    });
+  }
+
+  function deleteGroup(groupId) {
+    setGroups((prev) => prev.filter((g) => g.id !== groupId));
+    setDrugs((prev) => prev.map((x) => (x.groupId === groupId ? { ...x, groupId: null } : x)));
   }
 
   return (
@@ -118,10 +127,12 @@ export default function App() {
       <main className="app__body">
         {tab === 'scan' && <ScanScreen onAdd={addDrug} />}
         {tab === 'stack' && (
-          <StackScreen drugs={drugs} pairs={pairs} summary={summary}
-            onRemove={removeDrug} onUpdateDays={updateDrugDays} onGoScan={() => setTab('scan')} />
+          <StackScreen drugs={drugs} pairs={pairs} summary={summary} groups={groups}
+            onRemove={removeDrug} onAssignGroup={assignGroup}
+            onCreateGroup={createGroup} onDeleteGroup={deleteGroup}
+            onGoScan={() => setTab('scan')} />
         )}
-        {tab === 'map' && <MapScreen drugs={drugs} pairs={pairs} loading={loading} />}
+        {tab === 'map' && <MapScreen drugs={drugs} pairs={pairs} loading={loading} groups={groups} />}
 
         {tab !== 'scan' && (
           <p className="disclaimer">

@@ -3,26 +3,24 @@ import SafetyGraph from './SafetyGraph';
 import { speak, stopSpeaking } from '../lib/speech';
 
 const SEVMETA = {
-  red: { label: 'Dangerous', cls: 'red', icon: '!' },
+  red: { label: 'STOP', cls: 'red', icon: '!' },
   yellow: { label: 'Use caution', cls: 'amber', icon: '!' },
   green: { label: 'No known issue', cls: 'green', icon: '✓' },
 };
-const DAYS = [
-  { key: 'mon', label: 'Mon' }, { key: 'tue', label: 'Tue' }, { key: 'wed', label: 'Wed' },
-  { key: 'thu', label: 'Thu' }, { key: 'fri', label: 'Fri' }, { key: 'sat', label: 'Sat' }, { key: 'sun', label: 'Sun' },
-];
+const SEVGRADE = {
+  green: { grade: 'A', cls: 'green' },
+  yellow: { grade: 'C', cls: 'amber' },
+  red: { grade: 'F', cls: 'red' },
+};
 
-export default function MapScreen({ drugs, pairs, loading }) {
+export default function MapScreen({ drugs, pairs, loading, groups }) {
   const [selected, setSelected] = useState(null);
-  const [dayFilter, setDayFilter] = useState(null); // null = show everything, groups are optional
+  const [groupFilter, setGroupFilter] = useState(null);
+  const [view, setView] = useState('node');
 
-  const hasGroups = drugs.some((d) => d.days?.length);
-
-  // A drug with no days assigned is treated as "every day" and always shows,
-  // whether or not the user is using groups at all.
-  const viewDrugs = dayFilter ? drugs.filter((d) => !d.days?.length || d.days.includes(dayFilter)) : drugs;
+  const viewDrugs = groupFilter ? drugs.filter((d) => !d.groupId || d.groupId === groupFilter) : drugs;
   const viewNames = new Set(viewDrugs.map((d) => d.name.toLowerCase()));
-  const viewPairs = dayFilter
+  const viewPairs = groupFilter
     ? pairs.filter((p) => viewNames.has(p.drugA.toLowerCase()) && viewNames.has(p.drugB.toLowerCase()))
     : pairs;
   const viewSummary = viewPairs.reduce(
@@ -30,19 +28,16 @@ export default function MapScreen({ drugs, pairs, loading }) {
     { red: 0, yellow: 0, green: 0 }
   );
 
-  // auto-surface the most serious pair as the default detail
   const hottest = [...viewPairs].sort((a, b) => rank(b.severity) - rank(a.severity))[0];
   const active = selected || hottest;
   const activeKey = active ? [active.drugA, active.drugB].sort().join('|') : null;
-  // Nodes only pick up color once the user has actually tapped a line —
-  // the auto-surfaced "hottest pair" default should not tint any circle.
   const tappedKey = selected ? activeKey : null;
 
-  const dayGroups = (
+  const groupTabs = groups.length > 0 && (
     <div style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 2, marginBottom: 10 }}>
-      <DayChip active={!dayFilter} onClick={() => setDayFilter(null)}>All</DayChip>
-      {DAYS.map((d) => (
-        <DayChip key={d.key} active={dayFilter === d.key} onClick={() => setDayFilter(d.key)}>{d.label}</DayChip>
+      <GroupTab active={!groupFilter} onClick={() => setGroupFilter(null)}>All medications</GroupTab>
+      {groups.map((g) => (
+        <GroupTab key={g.id} active={groupFilter === g.id} onClick={() => setGroupFilter(g.id)}>{g.name}</GroupTab>
       ))}
     </div>
   );
@@ -60,10 +55,10 @@ export default function MapScreen({ drugs, pairs, loading }) {
 
   return (
     <div style={{ paddingTop: 8 }}>
-      {hasGroups && dayGroups}
+      {groupTabs}
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-        <p className="eyebrow">Safety map{dayFilter ? ` · ${DAYS.find((d) => d.key === dayFilter)?.label}` : ''}</p>
+        <p className="eyebrow">Safety map{groupFilter ? ` · ${groups.find((g) => g.id === groupFilter)?.name}` : ''}</p>
         <div className="chips">
           {viewSummary.red > 0 && <span className="chip chip--red"><span className="chip__dot" />{viewSummary.red} red</span>}
           {viewSummary.yellow > 0 && <span className="chip chip--amber"><span className="chip__dot" />{viewSummary.yellow}</span>}
@@ -71,11 +66,13 @@ export default function MapScreen({ drugs, pairs, loading }) {
         </div>
       </div>
 
+      <ViewToggle view={view} onChange={setView} />
+
       {viewDrugs.length < 2 ? (
         <div className="card" style={{ padding: 24, textAlign: 'center' }}>
-          <p style={{ fontSize: 14, color: 'var(--ink-soft)' }}>No medications grouped into this day yet.</p>
+          <p style={{ fontSize: 14, color: 'var(--ink-soft)' }}>No medications in this group yet.</p>
         </div>
-      ) : (
+      ) : view === 'node' ? (
         <div className="card" style={{ padding: 6, position: 'relative' }}>
           {loading && (
             <div style={{ position: 'absolute', top: 12, left: 0, right: 0, textAlign: 'center', fontSize: 12, color: 'var(--ink-faint)' }}>
@@ -88,9 +85,78 @@ export default function MapScreen({ drugs, pairs, loading }) {
             Tap any colored line for details
           </p>
         </div>
+      ) : (
+        <ListView pairs={viewPairs} activeKey={activeKey} loading={loading}
+          onSelectPair={(p) => { stopSpeaking(); setSelected(p); }} />
       )}
 
       {active && viewDrugs.length >= 2 && <DetailCard pair={active} />}
+    </div>
+  );
+}
+
+function ViewToggle({ view, onChange }) {
+  return (
+    <div style={{ display: 'flex', gap: 4, padding: 4, marginBottom: 10, background: 'var(--surface-2, #f2f2f0)', borderRadius: 12 }}>
+      <ToggleTab active={view === 'node'} onClick={() => onChange('node')}>Node</ToggleTab>
+      <ToggleTab active={view === 'list'} onClick={() => onChange('list')}>List</ToggleTab>
+    </div>
+  );
+}
+
+function ToggleTab({ active, onClick, children }) {
+  return (
+    <button onClick={onClick} style={{
+      flex: 1, padding: '8px 0', borderRadius: 9, fontSize: 13.5, fontWeight: 600,
+      border: 'none', cursor: 'pointer',
+      background: active ? 'var(--teal)' : 'transparent',
+      color: active ? '#fff' : 'var(--ink-soft)',
+    }}>
+      {children}
+    </button>
+  );
+}
+
+function ListView({ pairs, activeKey, loading, onSelectPair }) {
+  if (pairs.length === 0) {
+    return (
+      <div className="card" style={{ padding: 24, textAlign: 'center' }}>
+        <p style={{ fontSize: 14, color: 'var(--ink-soft)' }}>No interactions to show yet.</p>
+      </div>
+    );
+  }
+  const sorted = [...pairs].sort((a, b) => rank(b.severity) - rank(a.severity));
+
+  return (
+    <div className="card" style={{ padding: 6, position: 'relative' }}>
+      {loading && (
+        <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--ink-faint)', padding: '10px 0 0' }}>
+          Checking live interactions…
+        </div>
+      )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        {sorted.map((p) => {
+          const key = [p.drugA, p.drugB].sort().join('|');
+          const g = SEVGRADE[p.severity] || SEVGRADE.green;
+          const isActive = key === activeKey;
+          return (
+            <button key={key} onClick={() => onSelectPair(p)} style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              width: '100%', padding: '12px 10px', border: 'none', background: 'none',
+              borderBottom: '1px solid var(--line)', cursor: 'pointer', textAlign: 'left',
+              borderRadius: isActive ? 8 : 0,
+              outline: isActive ? `1px solid var(--${g.cls})` : 'none',
+            }}>
+              <span style={{ fontSize: 14, textTransform: 'capitalize', color: 'var(--ink)' }}>
+                {p.drugA} + {p.drugB}
+              </span>
+              <span className={`chip chip--${g.cls}`} style={{ fontWeight: 700, minWidth: 26, justifyContent: 'center' }}>
+                {g.grade}
+              </span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -135,13 +201,14 @@ function DetailCard({ pair }) {
 
 function rank(s) { return { green: 0, yellow: 1, red: 2 }[s] ?? 0; }
 
-function DayChip({ active, onClick, children }) {
+function GroupTab({ active, onClick, children }) {
   return (
     <button onClick={onClick} style={{
       flexShrink: 0, padding: '6px 12px', borderRadius: 20, fontSize: 12, fontWeight: 500,
       border: `1px solid ${active ? 'var(--teal)' : 'var(--line)'}`,
       background: active ? 'var(--teal)' : 'var(--surface)',
       color: active ? '#fff' : 'var(--ink-soft)',
+      whiteSpace: 'nowrap',
     }}>
       {children}
     </button>
