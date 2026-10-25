@@ -3,6 +3,7 @@ import ScanScreen from './components/ScanScreen';
 import StackScreen from './components/StackScreen';
 import MapScreen from './components/MapScreen';
 import Onboarding, { STEPS } from './components/Onboarding';
+import Auth, { loadSession, saveSession } from './components/Auth';
 import { api } from './lib/api';
 
 const SEED = [
@@ -11,15 +12,25 @@ const SEED = [
   { name: 'atorvastatin', dosage: '20 mg', frequency: 'daily' },
 ];
 
-function hasOnboarded() {
-  try { return localStorage.getItem('medstack_onboarded') === 'true'; } catch { return false; }
+// Per-user, on-device persistence keys.
+const drugsKey = (uid) => `medstack_${uid}_drugs`;
+const groupsKey = (uid) => `medstack_${uid}_groups`;
+const onboardedKey = (uid) => `medstack_${uid}_onboarded`;
+
+function loadJSON(key, fallback) {
+  try { const v = JSON.parse(localStorage.getItem(key)); return v ?? fallback; } catch { return fallback; }
+}
+function saveJSON(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
 }
 
 export default function App() {
-  const [showOnboarding, setShowOnboarding] = useState(() => !hasOnboarded());
+  const [user, setUser] = useState(() => loadSession());
+
+  const [showOnboarding, setShowOnboarding] = useState(false);
   const [onboardStep, setOnboardStep] = useState(0);
-  const [tab, setTab] = useState(showOnboarding ? STEPS[0].tab : 'stack');
-  const [drugs, setDrugs] = useState(() => (hasOnboarded() ? [] : SEED));
+  const [tab, setTab] = useState('stack');
+  const [drugs, setDrugs] = useState([]);
   const [groups, setGroups] = useState([]);
   const [pairs, setPairs] = useState([]);
   const [summary, setSummary] = useState({ red: 0, amber: 0, green: 0 });
@@ -31,6 +42,50 @@ export default function App() {
   const mapBtnRef = useRef(null);
   const [targetRects, setTargetRects] = useState({});
   const [appHeight, setAppHeight] = useState(0);
+
+  const recheck = useCallback(async (list) => {
+    if (list.length < 2) { setPairs([]); setSummary({ red: 0, amber: 0, green: 0 }); return; }
+    setLoading(true);
+    try {
+      const { pairs, summary } = await api.stackCheck(list.map((d) => d.name));
+      setPairs(pairs);
+      setSummary({ red: summary.red || 0, amber: summary.yellow || 0, green: summary.green || 0 });
+    } catch {
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // Load this user's saved data whenever the signed-in user changes.
+  useEffect(() => {
+    if (!user) return;
+    const onboarded = loadJSON(onboardedKey(user.id), false);
+    const savedGroups = loadJSON(groupsKey(user.id), []);
+    setGroups(savedGroups);
+    if (!onboarded) {
+      setShowOnboarding(true);
+      setOnboardStep(0);
+      setTab(STEPS[0].tab);
+      setDrugs(SEED);
+      recheck(SEED);
+    } else {
+      const savedDrugs = loadJSON(drugsKey(user.id), []);
+      setShowOnboarding(false);
+      setTab('stack');
+      setDrugs(savedDrugs);
+      recheck(savedDrugs);
+    }
+  }, [user, recheck]);
+
+  // Persist drugs/groups per user on change (but not during onboarding's seed).
+  useEffect(() => {
+    if (!user || showOnboarding) return;
+    saveJSON(drugsKey(user.id), drugs);
+  }, [drugs, user, showOnboarding]);
+  useEffect(() => {
+    if (!user) return;
+    saveJSON(groupsKey(user.id), groups);
+  }, [groups, user]);
 
   useEffect(() => {
     if (!showOnboarding) return;
@@ -56,35 +111,35 @@ export default function App() {
   }, [showOnboarding, onboardStep]);
 
   function finishOnboarding() {
-    try { localStorage.setItem('medstack_onboarded', 'true'); } catch {}
+    if (user) saveJSON(onboardedKey(user.id), true);
     setShowOnboarding(false);
+    setDrugs([]);
+    setPairs([]);
+    setSummary({ red: 0, amber: 0, green: 0 });
+    if (user) saveJSON(drugsKey(user.id), []);
+    setTab('scan');
+  }
+
+  function handleAuthed(u) {
+    setUser(u);
+  }
+
+  function signOut() {
+    saveSession(null);
+    setUser(null);
     setDrugs([]);
     setGroups([]);
     setPairs([]);
     setSummary({ red: 0, amber: 0, green: 0 });
-    setTab('scan');
+    setShowOnboarding(false);
+    setTab('stack');
   }
-
-  const recheck = useCallback(async (list) => {
-    if (list.length < 2) { setPairs([]); setSummary({ red: 0, amber: 0, green: 0 }); return; }
-    setLoading(true);
-    try {
-      const { pairs, summary } = await api.stackCheck(list.map((d) => d.name));
-      setPairs(pairs);
-      setSummary({ red: summary.red || 0, amber: summary.yellow || 0, green: summary.green || 0 });
-    } catch {
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => { recheck(drugs); }, []);
 
   function addDrug(d) {
     if (!d?.name) return;
     setDrugs((prev) => {
       if (prev.some((x) => x.name.toLowerCase() === d.name.toLowerCase())) return prev;
-      const next = [...prev, { ...d, groupId: d.groupId || null }];
+      const next = [...prev, { ...d, groupId: d.groupId || null, displayName: d.displayName || null }];
       recheck(next);
       return next;
     });
@@ -97,6 +152,16 @@ export default function App() {
       recheck(next);
       return next;
     });
+  }
+
+  // Rename sets a display-only label. The real `name` is never changed, so all
+  // interaction lookups and grouping continue to use the true drug name.
+  function renameDrug(name, displayName) {
+    setDrugs((prev) =>
+      prev.map((x) => (x.name.toLowerCase() === name.toLowerCase()
+        ? { ...x, displayName: displayName && displayName.trim() ? displayName.trim() : null }
+        : x))
+    );
   }
 
   function assignGroup(name, groupId) {
@@ -115,20 +180,28 @@ export default function App() {
     setDrugs((prev) => prev.map((x) => (x.groupId === groupId ? { ...x, groupId: null } : x)));
   }
 
+  if (!user) {
+    return <Auth onAuthed={handleAuthed} />;
+  }
+
   return (
     <div className="app" ref={appRef}>
       <header className="app__header">
         <div className="brand">
           <span className="brand__mark">Med<em>Stack</em></span>
         </div>
-        <span className="brand__tag">Safety map</span>
+        {!showOnboarding && (
+          <button onClick={signOut} className="brand__tag" style={{ background: 'none', color: 'var(--ink-faint)' }}>
+            Sign out
+          </button>
+        )}
       </header>
 
       <main className="app__body">
         {tab === 'scan' && <ScanScreen onAdd={addDrug} />}
         {tab === 'stack' && (
           <StackScreen drugs={drugs} pairs={pairs} summary={summary} groups={groups}
-            onRemove={removeDrug} onAssignGroup={assignGroup}
+            onRemove={removeDrug} onRename={renameDrug} onAssignGroup={assignGroup}
             onCreateGroup={createGroup} onDeleteGroup={deleteGroup}
             onGoScan={() => setTab('scan')} />
         )}
